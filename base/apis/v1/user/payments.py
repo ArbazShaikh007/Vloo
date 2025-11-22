@@ -1,0 +1,421 @@
+import jwt, json, threading
+import os
+import secrets, boto3, requests
+import random
+import string
+from datetime import datetime, timedelta
+from flask import request, jsonify
+from flask_restful import Resource
+from werkzeug.security import generate_password_hash
+from werkzeug.utils import secure_filename
+from base.database.db import db
+from dotenv import load_dotenv
+from pathlib import Path
+from sqlalchemy import func
+from base.apis.v1.admin.models import SubZone,ContactUs, Extras, Cms, Banners, Services, Zone, CarBrands, CarModels, \
+    AssignProviderService, Faqs, Store
+from base.apis.v1.user.models import UserPayments,UserServiceReviewImages, UserServiceReview, ServiceCompletedData, token_required, \
+    User, UserAddress, ProviderSlots, SavedUserCars, ServiceRequested
+from base.common.utils import find_zone_for_latlng,get_hourly_slots, delete_photos, push_notification, upload_photos_local, upload_photos, \
+    user_send_reset_email, delete_photos_local
+from base.common.path import COMMON_URL
+from sqlalchemy import desc
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+from Crypto.Util.Padding import unpad
+import binascii, json
+from urllib.parse import parse_qs, unquote_plus
+from base.common.helpers import get_normal_message
+
+NEOLEAP_HOSTED_URL = os.getenv("NEOLEAP_HOSTED_URL")
+NEOLEAP_TRANPORTAL_ID = os.getenv("NEOLEAP_TRANPORTAL_ID")
+NEOLEAP_TRANPORTAL_PASSWORD = os.getenv("NEOLEAP_TRANPORTAL_PASSWORD")
+NEOLEAP_TERMINAL_RESOURCE_KEY = os.getenv("NEOLEAP_TERMINAL_RESOURCE_KEY")
+CURRENCY_CODE = os.getenv("CURRENCY_CODE")
+CALLBACK_SUCCESS_URL = os.getenv("CALLBACK_SUCCESS_URL")
+CALLBACK_FAILED_URL = os.getenv("CALLBACK_FAILED_URL")
+NEOLEAP_INQUIRY_ACTION = os.getenv("NEOLEAP_INQUIRY_ACTION", "8")  # some docs use 8 or 10
+NEOLEAP_BASE_URL = os.getenv("NEOLEAP_BASE_URL", "https://securepayments.alrajhibank.com.sa/pg/payment/tranportal.htm")
+IV = os.getenv("IV")
+
+# env_path = Path('/var/www/html/backend/base/.env')
+# load_dotenv(dotenv_path=env_path)
+
+load_dotenv()
+
+def encrypt(text):
+    cipher = AES.new(NEOLEAP_TERMINAL_RESOURCE_KEY.encode(), AES.MODE_CBC, IV.encode())
+    return cipher.encrypt(pad(text.encode(), AES.block_size)).hex().upper()
+
+def encrypt_trandata(plain):
+    if not NEOLEAP_TERMINAL_RESOURCE_KEY or len(NEOLEAP_TERMINAL_RESOURCE_KEY) != 32:
+        raise ValueError("NEOLEAP_TERMINAL_RESOURCE_KEY must be 32 characters.")
+    cipher = AES.new(NEOLEAP_TERMINAL_RESOURCE_KEY.encode(), AES.MODE_CBC, IV.encode())
+    return cipher.encrypt(pad(json.dumps(plain).encode(), AES.block_size)).hex().upper()
+
+class GetPaymentDetailsUrl(Resource):
+    def get(self):
+        plain = [{
+            "id": NEOLEAP_TRANPORTAL_ID,
+            "password": NEOLEAP_TRANPORTAL_PASSWORD,
+            "action": NEOLEAP_INQUIRY_ACTION,  # inquiry per your doc (8 or 10)
+            "transId": "600202523710945246",
+            "amt": "10",                    # MUST match original transaction amount
+    "currencyCode": "682"
+        }]
+
+        trandata = encrypt_trandata(plain)
+        payload = [{
+            "id": NEOLEAP_TRANPORTAL_ID,
+            "trandata": trandata
+        }]
+
+        try:
+            r = requests.post(NEOLEAP_BASE_URL, json=payload, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            # NeoLeap typically returns an array with first object holding fields (status, result, etc.)
+            first = data[0] if isinstance(data, list) and data else {}
+            return jsonify({"status": 1, "data": first})
+        except Exception as e:
+            return jsonify({"status": 0, "message": str(e)}), 400
+
+def decrypt_trandata_any(trandata_hex: str, key32: str) -> dict:
+    if not key32 or len(key32) != 32:
+        raise ValueError("NEOLEAP_TERMINAL_RESOURCE_KEY must be 32 characters")
+
+    # decrypt
+    ct = bytes.fromhex(trandata_hex)
+    cipher = AES.new(key32.encode("utf-8"), AES.MODE_CBC, IV.encode("utf-8"))
+    pt = unpad(cipher.decrypt(ct), AES.block_size)
+    text = pt.decode("utf-8", errors="replace").strip()
+
+    # NEW: if it looks URL-encoded, unquote first
+    # (fast check: it contains % and no '{' yet)
+    if "%" in text and "{" not in text and "[" not in text:
+        text = unquote_plus(text)
+
+    # try JSON (many gateways return a 1-element array)
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+            return obj[0]
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # fallback: querystring (key=value&key2=value2)
+    qs = {k: (v[0] if isinstance(v, list) and v else "") for k, v in parse_qs(text).items()}
+    if qs:
+        return qs
+
+    # debug preview
+    raise ValueError(f"Decrypted text not JSON or querystring. Preview: {text[:200]}...")
+
+class PaymentSuccessUrl(Resource):
+    def post(self):
+
+        try:
+            data = request.get_json(silent=True) or request.form or request.args
+            payment_id = data.get("paymentid")
+            trandata = data.get("trandata")
+            print('trandataaaaaaaaaaaaaaaaaaa',data )
+
+            get_payment_details = UserPayments.query.filter_by(payment_id=payment_id).first()
+            if not get_payment_details:
+                print('No payment data found')
+                return {'status': 0,'message': 'No payment data found'}
+
+            if not trandata:
+                get_payment_details.intend_status = "Failed"
+                get_payment_details.failed_reason = "missing trandata"
+
+                db.session.commit()
+
+                return {"status": 0, "message": "Payment failed", "reason": "missing_trandata"}, 400
+
+            txn_details = decrypt_trandata_any(trandata, NEOLEAP_TERMINAL_RESOURCE_KEY)
+            print('txn_detailsssssssssssssssssss',txn_details)
+
+            # 👉 Retrieve udf1
+            # udf1_value = txn_details.get("udf1")
+            # amount = txn_details.get("amt")
+            trans_id = txn_details.get("transId")
+            track_id = txn_details.get("trackId")
+
+            result = str(txn_details.get("result", "")).upper()
+            auth_code = str(txn_details.get("authRespCode", "")).upper()
+
+            error = txn_details.get("error")
+            error_txt = txn_details.get("errorText")
+
+            get_payment_details = UserPayments.query.filter_by(track_id=track_id,payment_id=payment_id).first()
+
+            if error:
+                get_payment_details.intend_status = "Failed"
+                get_payment_details.failed_reason = error_txt
+
+                db.session.commit()
+
+                return {"status": 0, "message": "Payment failed"}, 400
+
+
+            elif result == "APPROVED" and auth_code == "00":
+
+                get_payment_details.transaction_id=trans_id
+                get_payment_details.intend_status="Success"
+                get_payment_details.trandata = trandata
+
+                # add_payment_details = UserPayments(transaction_id=trans_id,total_amount = amount,intend_status="Success",payment_id=payment_id,created_time=datetime.utcnow(),user_id=udf1_value)
+                # db.session.add(add_payment_details)
+                db.session.commit()
+
+                print('dataaaaaaaaaaaaaaaaaaaaaaaaa Successs', data)
+
+                return {'status': 1, 'message': 'Payment Process.', 'payment_id': payment_id}
+
+            else:
+                print('Any other problem found')
+                return {"status": 0, "message": "Payment failed"}, 400
+
+        except Exception as e:
+            print('errorrrrrrrrrrrrrrrrr:', str(e))
+            return {'status': 0, 'message': 'Something went wrong'}, 500
+
+class PaymentFailedUrl(Resource):
+    def post(self):
+        data = request.get_json(silent=True) or request.form or request.args
+        payment_id = data.get("paymentid")
+        trandata = data.get("trandata")
+        print('trandataaaaaaaaaaaaaaaaaaa', data)
+
+        txn_details = {}
+        if trandata:
+            txn_details = decrypt_trandata_any(trandata, NEOLEAP_TERMINAL_RESOURCE_KEY)
+        print('txn_detailsssssssssssssssssss', txn_details)
+
+        # 👉 Retrieve udf1
+        udf1_value = txn_details.get("udf1")
+        amount = txn_details.get("amt")
+        trans_id = txn_details.get("transId")
+        error_txt = txn_details.get("errorText")
+
+        print('dataaaaaaaaaaaaaaaaaaaaaaaaa Fail', data)
+
+        add_payment_details = UserPayments(failed_reason=error_txt,transaction_id=trans_id,total_amount = amount,intend_status="Failed",payment_id=payment_id,created_time=datetime.utcnow(),user_id=udf1_value)
+        db.session.add(add_payment_details)
+        db.session.commit()
+
+        # mark payment as SUCCESS in DB
+
+        return jsonify({'status': 1, 'message': 'Payment Failed.'})
+
+class MakePaymentHoldResource(Resource):
+    @token_required
+    def post(self,active_user):
+        try:
+            data = request.get_json()
+
+            amount = data.get("amount")
+
+            service_date = data.get('service_date')
+            slot_start_time = data.get('slot_start_time')
+            slot_end_time = data.get('slot_end_time')
+            service_id = data.get('service_id')
+            address_id = data.get('address_id')
+            car_id = data.get('car_id')
+
+            if not car_id:
+                message = get_normal_message("msg_32", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+            if not service_date:
+                message = get_normal_message("msg_33", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+            if not slot_start_time:
+                message = get_normal_message("msg_34", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+            if not slot_end_time:
+                message = get_normal_message("msg_35", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+            if not service_id:
+                message = get_normal_message("msg_36", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+            if not address_id:
+                message = get_normal_message("msg_37", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+
+            get_service_data = Services.query.get(service_id)
+            if not get_service_data:
+                message = get_normal_message("msg_38", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+
+            get_address_data = UserAddress.query.filter_by(id=address_id, user_id=active_user.id).first()
+            if not get_address_data:
+                message = get_normal_message("msg_39", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+
+            get_car_data = SavedUserCars.query.get(car_id)
+            if not get_car_data:
+                message = get_normal_message("msg_40", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+
+            # Convert string to datetime object
+            date_obj = datetime.strptime(service_date, "%Y-%m-%d")
+
+            # Get full weekday name (e.g., "Monday")
+            day_name = date_obj.strftime("%A")
+            print('day_nameeeeeeeeeeeeeeeeeeeeeeeeeeee', day_name)
+
+            check_already_request = ServiceRequested.query.filter_by(car_id=car_id,
+                                                                     user_id=active_user.id,
+                                                                     address_id=address_id, service_id=service_id,
+                                                                     # place_id=get_address_data.place_id,
+                                                                     service_day=day_name,
+                                                                     slot_end_time=slot_end_time,
+                                                                     service_date=service_date,
+                                                                     slot_start_time=slot_start_time).first()
+
+            if check_already_request:
+                message = get_normal_message("msg_41", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+
+            if not amount:
+                message = get_normal_message("msg_42", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+
+            if int(amount) <= 0:
+                message = get_normal_message("msg_43", active_user.active_language)
+                return jsonify({"status": 0, "message": message}), 400
+
+            zones = SubZone.query.filter_by(is_deleted=False).all()
+            matched_zone = find_zone_for_latlng(zones, get_address_data.lat, get_address_data.long, accept_border=True)
+
+            if not matched_zone:
+                message = get_normal_message("msg_104", active_user.active_language)
+                return jsonify({'status': 0, 'message': message})
+
+            track_id = f"CHK-{int(datetime.utcnow().timestamp())}"
+
+            plain = [{
+                "id": NEOLEAP_TRANPORTAL_ID,
+                "password": NEOLEAP_TRANPORTAL_PASSWORD,
+                "action": "4",  # use "1" for purchase, "4" for hold
+                "currencyCode": CURRENCY_CODE,
+                "errorURL": CALLBACK_FAILED_URL + f"?track_id={track_id}",
+                "responseURL": CALLBACK_SUCCESS_URL + f"?track_id={track_id}",
+                "trackId": track_id,
+                "amt": str(amount),
+                "udf1": str(active_user.id)
+            }]
+
+            trandata = encrypt(json.dumps(plain))
+            payload = [{
+                "id": NEOLEAP_TRANPORTAL_ID,
+                "trandata": trandata,
+                "errorURL": CALLBACK_FAILED_URL,
+                "responseURL": CALLBACK_SUCCESS_URL
+            }]
+
+            res = requests.post(NEOLEAP_HOSTED_URL, json=payload)
+            data = res.json()[0]
+
+            if data.get("status") == "1" and ":" in data.get("result",""):
+                pid, page = data["result"].split(":",1)
+
+                add_payment_details = UserPayments(total_amount=amount,
+                                                   payment_id=pid, created_time=datetime.utcnow(),
+                                                   user_id=active_user.id,track_id=track_id)
+                db.session.add(add_payment_details)
+                db.session.commit()
+
+                message = get_normal_message("msg_11", active_user.active_language)
+
+                return jsonify({"status": 1,'message': message,"checkoutUrl": f"{page}?PaymentID={pid}"})
+
+            message = get_normal_message("msg_10", active_user.active_language)
+            return {"status": 0, "message": message, "error": data}, 400
+
+        except Exception as e:
+            print('errorrrrrrrrrrrrrrrrr:', str(e))
+            return {'status': 0, 'message': "Something went wrong"}, 500
+
+class CapturePaymentResource(Resource):
+    @token_required
+    def post(self,active_user):
+        body = request.get_json(force=True)
+        request_id = body.get("request_id")   # from success callback
+
+        if not request_id:
+            message = get_normal_message("msg_19", active_user.active_language)
+            return jsonify({'status': 0,'message': message})
+
+        get_request_data = ServiceRequested.query.get(request_id)
+        if not get_request_data:
+            return jsonify({'status': 0,'message': 'Invalid request data'})
+
+        get_payment_data = UserPayments.query.filter_by(service_request_id = get_request_data.id,intend_status= 'Success').first()
+        if not get_payment_data:
+            return jsonify({'status': 0,'message': 'Invalid payment data found'})
+
+        plain = [{
+            "amt": str(get_payment_data.total_amount),
+            "action": "5",  # Capture
+            "password": NEOLEAP_TRANPORTAL_PASSWORD,
+            "id": NEOLEAP_TRANPORTAL_ID,
+            "currencyCode": CURRENCY_CODE,
+            "trackId": f"CAP-{int(datetime.utcnow().timestamp())}",
+            # "udf5": "PaymentID",
+            "transId": get_payment_data.transaction_id
+        }]
+
+        trandata = encrypt(json.dumps(plain))
+        payload = [{
+            "id": NEOLEAP_TRANPORTAL_ID,
+            "trandata": trandata,
+            "errorURL": CALLBACK_FAILED_URL,
+            "responseURL": CALLBACK_SUCCESS_URL
+        }]
+
+        r = requests.post(NEOLEAP_BASE_URL, json=payload, timeout=60)
+        data = r.json()[0]
+
+        if data.get("status") == "1":
+            # update your DB: mark as captured/paid
+            # e.g., UserPayments.query.filter_by(payment_id=payment_id).update(...)
+            return jsonify({"status": 1, "message": "Payment completed successfully", "data": data})
+        return jsonify({"status": 0, "message": "Capture failed", "data": data}), 400
+
+def process_refund(total_amount, transaction_id):
+    try:
+        plain = [{
+            "amt": str(total_amount),
+            "action": "2",  # Refund
+            "password": NEOLEAP_TRANPORTAL_PASSWORD,
+            "id": NEOLEAP_TRANPORTAL_ID,
+            "currencyCode": CURRENCY_CODE,
+            "trackId": f"REF-{int(datetime.utcnow().timestamp())}",
+            "transId": transaction_id
+        }]
+
+        trandata = encrypt(json.dumps(plain))
+        payload = [{
+            "id": NEOLEAP_TRANPORTAL_ID,
+            "trandata": trandata,
+            "errorURL": CALLBACK_FAILED_URL,
+            "responseURL": CALLBACK_SUCCESS_URL
+        }]
+
+        r = requests.post(NEOLEAP_BASE_URL, json=payload, timeout=60)
+        r.raise_for_status()
+        data = r.json()[0]
+
+        if data.get("status") == "1":
+            return True, "Refunded"
+        else:
+            return False, "Refund Failed"
+
+    except requests.RequestException as req_err:
+        return False, "Refund Failed"
+    except Exception:
+        return False, "Refund Failed"

@@ -1,0 +1,114 @@
+/* ===== ARB Pay Page – Custom Branding (Vloo) =====
+   Palette (from logo):
+   --primary: #0E5D66;
+   --primary-dark: #0A4750;
+   --accent: #2B7A86;
+   --text-dark: #1C2327;
+   --text-muted: #5E6B73;
+   --border: #D9E1E4;
+   --surface: #FFFFFF;
+   --surface-alt: #F7F9FA;
+*/
+
+@charset "utf-8";
+
+/* Links */
+a{
+  color:#0E5D66;
+  text-decoration:none;
+}
+a:hover, a:focus{
+  color:#0A4750;
+  text-decoration:underline;
+  outline: none;
+}
+
+/* Header (contains logo + header message) and Footer */
+header{
+  background:#0E5D66;
+  border-bottom:2px solid #2B7A86;
+  color:#FFFFFF;
+}
+footer{
+  background:#0E5D66;
+  border-top:2px solid #2B7A86;
+  color:#FFFFFF;
+}
+
+/* Section / tab headings some gateways render as accordion headers */
+.accordion h2{
+  border-bottom:2px solid #2B7A86;
+  color:#1C2327;
+  padding-bottom:6px;
+  margin-bottom:12px;
+}
+
+/* Buttons */
+.btn{
+  background:#0E5D66;
+  border:1px solid #0A4750;
+  color:#FFFFFF !important;
+  border-radius:8px;
+  padding:10px 16px;
+  font-weight:600;
+  transition: all .15s ease-in-out;
+}
+.btn:hover, .btn:focus{
+  background:#0A4750;
+  border-color:#0A4750;
+  cursor:pointer;
+  color:#FFFFFF !important;
+}
+.btn:disabled, .btn[disabled]{
+  background:#D9E1E4;
+  border-color:#D9E1E4;
+  color:#5E6B73 !important;
+  cursor:not-allowed;
+  opacity:.85;
+}
+
+/* Base typography & page background */
+body{
+  color:#1C2327;
+  background:#FFFFFF;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+label{ color:#1C2327; }
+.small, .muted, .help{ color:#5E6B73; }
+
+/* Form fields */
+input, select, textarea{
+  border:1px solid #D9E1E4;
+  border-radius:8px;
+  padding:10px 12px;
+  background:#FFFFFF;
+}
+input:focus, select:focus, textarea:focus{
+  border-color:#2B7A86;
+  box-shadow:0 0 0 3px rgba(14,93,102,.15);
+  outline:0;
+}
+
+/* Tables & cards/panels */
+.table thead th{
+  border-bottom:2px solid #D9E1E4;
+}
+.card, .panel{
+  background:#FFFFFF;
+  border:1px solid #D9E1E4;
+  border-radius:12px;
+  padding:12px;
+}
+.section-alt{ background:#F7F9FA; }
+.white-text{ color:#FFFFFF; } /* ARB examples sometimes reference this */
+
+/* Status helpers */
+.text-danger{ color:#B00020; }
+.text-success{ color:#0E5D66; }
+.badge-primary{
+  background:#0E5D66;
+  color:#FFFFFF;
+  border-radius:999px;
+  padding:2px 8px;
+}

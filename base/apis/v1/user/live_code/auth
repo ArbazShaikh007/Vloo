@@ -1,0 +1,169 @@
+import jwt,json,threading
+import os
+import secrets,boto3
+from datetime import datetime, timedelta
+from flask import request, jsonify,make_response,render_template,redirect,url_for
+from flask_restful import Resource
+from werkzeug.security import generate_password_hash
+from werkzeug.utils import secure_filename
+from base.database.db import db
+from dotenv import load_dotenv
+from pathlib import Path
+from base.common.utils import push_notification,upload_photos_local,upload_photos
+from base.apis.v1.user.models import User,token_required
+from base.common.helpers import get_normal_message
+
+env_path = Path('/var/www/html/backend/base/.env')
+load_dotenv(dotenv_path=env_path)
+
+# load_dotenv()
+
+# USER_FOLDER = 'base/static/user_photos/'
+
+class UserLoginResource(Resource):
+    def post(self):
+        try:
+            data = request.get_json()
+            print('data',data)
+
+            if not data:
+                message = get_normal_message("msg_1","en")
+                return jsonify({'status':0,'message': message})
+
+            country_code = data.get('country_code')
+            mobile_number = data.get('mobile_number')
+            role = data.get('role')
+            device_token = data.get('device_token')
+            device_type = data.get('device_type')
+            timezone = data.get('timezone')
+
+            print('data',data)
+
+            if not role:
+                message = get_normal_message("msg_2", "en")
+                return jsonify({'status': 0,'message': message})
+            if not country_code:
+                message = get_normal_message("msg_3", "en")
+                return jsonify({'status': 0,'message': message})
+            if not mobile_number:
+                message = get_normal_message("msg_4", "en")
+                return jsonify({'status': 0,'message': message})
+            if not timezone:
+                message = get_normal_message("msg_5", "en")
+                return jsonify({'status': 0,'message': message})
+
+            if not role in ["Customer","Worker"]:
+                message = get_normal_message("msg_6", "en")
+                return jsonify({'status':0,'message': message})
+
+            none_exitsting_device_token = User.query.filter_by(device_token=device_token).first()
+            if none_exitsting_device_token:
+                none_exitsting_device_token.device_token = None
+                none_exitsting_device_token.device_type = None
+                db.session.commit()
+
+            # i not added country code match because need to confirm by front they send me seperate feilds or joined
+
+            if role == "Customer":
+                validate_user = User.query.filter_by(mobile_number = mobile_number,is_deleted=False,role = "Customer").first()
+            else:
+                validate_user = User.query.filter_by(mobile_number=mobile_number, is_deleted=False,role = "Worker").first()
+
+            if validate_user:
+                if validate_user.is_block:
+                    message = get_normal_message("msg_7", "en")
+                    return jsonify({'status':  0,'message': message})
+
+                token = jwt.encode({'id': validate_user.id,'role': role, 'exp': datetime.utcnow() + timedelta(days=365)},
+                                       os.getenv("SECRET_KEY"))
+
+                validate_user.last_login = datetime.utcnow()
+                validate_user.device_token = device_token
+                validate_user.device_type = device_type
+                db.session.commit()
+
+                message = get_normal_message("msg_8", "en")
+
+                return jsonify({'status': 1,'message': message,'data': validate_user.as_dict(token)})
+
+            else:
+
+                add_customer = User(
+                        country_code = country_code,
+                        mobile_number = mobile_number,
+                        role = role,
+                        device_token = device_token,
+                        device_type = device_type,
+                        created_time = datetime.utcnow(),
+                        timezone = timezone,
+                        last_login = datetime.utcnow()
+
+                    )
+
+                db.session.add(add_customer)
+                db.session.commit()
+
+                token = jwt.encode({'id': add_customer.id, 'role': "Customer",
+                                        'exp': datetime.utcnow() + timedelta(days=365)},
+                                       os.getenv("SECRET_KEY"))
+
+                message = get_normal_message("msg_9", "en")
+
+                return jsonify(
+                        {'status': 1, 'message': message, 'data': add_customer.as_dict(token)})
+
+        except Exception as e:
+            print('errorrrrrrrrrrrrrrrrr:', str(e))
+            message = get_normal_message("msg_10", "en")
+            return {'status': 0, 'message': message}, 500
+
+class GetUserResource(Resource):
+    @token_required
+    def get(self,active_user):
+        try:
+            token = request.headers["authorization"]
+
+            message = get_normal_message("msg_11", active_user.active_language)
+
+            return jsonify(
+                {'status': 1, 'message': message, 'data': active_user.as_dict(token)})
+
+        except Exception as e:
+            print('errorrrrrrrrrrrrrrrrr:', str(e))
+            message = get_normal_message("msg_10", active_user.active_language)
+            return {'status': 0, 'message': message}, 500
+
+class UpdateUserResource(Resource):
+    @token_required
+    def put(self,active_user):
+        try:
+            token = request.headers["authorization"]
+            name = request.form.get("name")
+            email = request.form.get("email")
+            profile_pic = request.files.get("profile_pic")
+
+            if name:
+                active_user.name = name
+            if email:
+                active_user.email = email
+            if profile_pic:
+                file_path , picture = upload_photos(profile_pic)
+
+                active_user.image_name = picture
+                active_user.image_path = file_path
+
+            if active_user.is_profile_completed == False:
+                if name and email:
+                    active_user.is_profile_completed = True
+
+            db.session.commit()
+
+            message = get_normal_message("msg_12", active_user.active_language)
+
+            return jsonify(
+                {'status': 1, 'message': message, 'data': active_user.as_dict(token)})
+
+        except Exception as e:
+            print('errorrrrrrrrrrrrrrrrr:', str(e))
+            message = get_normal_message("msg_10", active_user.active_language)
+            return {'status': 0, 'message': message}, 500

@@ -1,0 +1,433 @@
+from base.database.db import db
+from functools import wraps
+from flask import request
+import jwt, os
+from werkzeug.security import check_password_hash
+from dotenv import load_dotenv
+from pathlib import Path
+from itsdangerous import URLSafeTimedSerializer as Serializer
+from base.common.path import COMMON_URL
+from datetime import datetime
+from base.common.path import generate_presigned_url
+from base.common.helpers import get_normal_message
+# env_path = Path('/var/www/html/backend/base/.env')
+# load_dotenv(dotenv_path=env_path)
+
+load_dotenv()
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    name = db.Column(db.String(150))
+    customer_id = db.Column(db.String(100))
+    country_code = db.Column(db.String(5), nullable=False)
+    mobile_number = db.Column(db.String(20), nullable=False)
+    email = db.Column(db.String(50))
+    password = db.Column(db.String(250))
+    lat = db.Column(db.String(150))
+    long = db.Column(db.String(150))
+    image_name = db.Column(db.String(100))
+    image_path = db.Column(db.String(200))
+    role = db.Column(db.String(200))
+    active_language = db.Column(db.String(10), default='en')
+    is_deleted = db.Column(db.Boolean(), default=False)
+    delete_reason = db.Column(db.String(1000))
+    deleted_time = db.Column(db.DateTime)
+    is_block = db.Column(db.Boolean(), default=False)
+    device_token = db.Column(db.String(500))
+    device_type = db.Column(db.String(50))
+    is_notification = db.Column(db.Boolean(), default=True)
+    created_time = db.Column(db.DateTime)
+    last_login = db.Column(db.DateTime)
+    timezone = db.Column(db.String(50))
+    is_slot = db.Column(db.Boolean(), default=False)
+    is_profile_completed = db.Column(db.Boolean(), default=False)
+    is_online = db.Column(db.Boolean(), default=True)
+    avarage_rating = db.Column(db.String(150), default='0')
+
+    token_version = db.Column(db.Integer, nullable=False, default=0)
+
+    subadmin_id = db.Column(db.Integer)
+
+    my_slots = db.relationship('ProviderSlots', backref='my_slots')
+    assign_provider = db.relationship('AssignProviderService', backref='assign_provider')
+    provider_review = db.relationship('UserServiceReview', backref='provider_review',
+                                foreign_keys='UserServiceReview.provider_id')
+    my_contact_us = db.relationship('ContactUs', backref='my_contact_us')
+
+    # by_notification_id = db.relationship('Notification', backref='by_notification_id',
+    #                                  foreign_keys='Notification.by_id')
+
+    def get_user_token(self, expiress_sec=1800):
+        serial = Serializer(os.getenv("SECRET_KEY"))
+        return serial.dumps({'user_id': self.id})
+
+    @staticmethod
+    def verify_user_token(token):
+        serial = Serializer(os.getenv("SECRET_KEY"))
+        try:
+            user_id = serial.loads(token)['user_id']
+        except:
+            return None
+        return User.query.get(user_id)
+
+    def check_password(self, password):
+        return check_password_hash(self.password, password)
+
+    def as_dict_basic(self):
+
+        return {
+            'id': self.id,
+            'name': self.name if self.name is not None else '',
+            'countryCode': self.country_code if self.country_code is not None else '',
+            'mobile': self.mobile_number if self.mobile_number is not None else '',
+            'email': self.email if self.email is not None else '',
+        'active_language': self.active_language}
+
+    def as_dict(self,token=""):
+
+        if self.role == "Customer":
+
+            return {
+
+            '_id': self.id,
+            'name': self.name if self.name is not None else '',
+            'countryCode': self.country_code if self.country_code is not None else '',
+            'mobile': self.mobile_number if self.mobile_number is not None else '',
+            'email': self.email if self.email is not None else '',
+            'lat': self.lat if self.lat is not None else '',
+            'long': self.long if self.long is not None else '',
+            'role': self.role,
+            'image': generate_presigned_url(self.image_name) if self.image_name is not None else '',
+            'notification_button': self.is_notification,
+            'deviceType': self.device_type if self.device_type is not None else '',
+            'deviceId': self.device_token if self.device_token is not None else '',
+            'last_login_date_and_time': self.last_login,
+            'token': token,
+                'is_profile_completed': self.is_profile_completed,
+        'active_language': self.active_language
+        }
+
+        elif self.role == "Worker":
+
+            is_slot = False
+
+            if self.my_slots:
+                is_slot = any(slot.is_selected == True for slot in self.my_slots)
+
+            return {
+
+                '_id': self.id,
+                'name': self.name if self.name is not None else '',
+                'countryCode': self.country_code if self.country_code is not None else '',
+                'mobile': self.mobile_number if self.mobile_number is not None else '',
+                'email': self.email if self.email is not None else '',
+                'lat': self.lat if self.lat is not None else '',
+                'long': self.long if self.long is not None else '',
+                'role': self.role,
+                'image': generate_presigned_url(self.image_name) if self.image_name is not None else '',
+                'notification_button': self.is_notification,
+                'deviceType': self.device_type if self.device_type is not None else '',
+                'deviceId': self.device_token if self.device_token is not None else '',
+                'last_login_date_and_time': self.last_login,
+                'is_slot': is_slot,
+                'is_online': self.is_online,
+                'token': token,
+                'is_profile_completed': self.is_profile_completed,
+        'active_language': self.active_language
+            }
+
+    def as_dict_admin(self):
+
+        return {
+
+            'id': self.id,
+            'name': self.name if self.name is not None else '',
+            'countryCode': self.country_code if self.country_code is not None else '',
+            'mobile': self.mobile_number if self.mobile_number is not None else '',
+            'email': self.email if self.email is not None else '',
+            'lat': self.lat if self.lat is not None else '',
+            'long': self.long if self.long is not None else '',
+            'role': self.role,
+            'image': generate_presigned_url(self.image_name) if self.image_name is not None else '',
+            'last_login': self.last_login
+        }
+
+def token_required(f):
+    @wraps(f)
+    def decorator(*args, **kwargs):
+        token = None
+        if "authorization" in request.headers:
+            token = request.headers["authorization"]
+        if not "authorization" in request.headers:
+            return {'status': 0,'message': 'authorization is missing'}, 401
+
+        if not token:
+            return {"status": 0, "message": "a valid token is missing"}, 401
+        try:
+            data = jwt.decode(token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
+            token_version_in_token = data.get("token_version")
+
+            active_user = User.query.filter_by(id=data["id"]).first()
+
+            if active_user is None:
+                return {'status': 0, 'message': 'Invalid user'}, 401
+
+            if active_user.is_block == True:
+                message = get_normal_message("msg_7", active_user.active_language)
+                return {'status': 0, 'message': message}, 401
+            if active_user.is_deleted == True:
+                message = get_normal_message("msg_13", active_user.active_language)
+                return {'status': 0, 'message': message}, 401
+
+            if token_version_in_token is None or (token_version_in_token != (active_user.token_version or 0)):
+                message = get_normal_message("msg_115", active_user.active_language)
+                try:
+                    message = get_normal_message("msg_115", active_user.active_language)
+                except Exception:
+                    pass
+                return {'status': 0, 'message': message}, 401
+
+        except jwt.ExpiredSignatureError:
+            return {"status": 0, "message": "Token has expired"}, 401
+        except jwt.InvalidTokenError:
+            return {"status": 0, "message": "Invalid token"}, 401
+        except Exception as e:
+            return {"status": 0, "message": f"An error occurred: {str(e)}"}, 401
+
+        if not active_user:
+            return {'status': 0, 'message': 'Invalid user'}, 401
+
+        active_user.last_login = datetime.utcnow()
+        db.session.commit()
+
+        kwargs['active_user'] = active_user
+
+        return f(*args, **kwargs)
+
+    return decorator
+
+class UserAddress(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    place_type = db.Column(db.String(150))
+    place_id = db.Column(db.String(150))
+    lat = db.Column(db.String(150))
+    long = db.Column(db.String(150))
+    state = db.Column(db.String(150))
+    city = db.Column(db.String(150))
+    house_no = db.Column(db.String(500))
+    address = db.Column(db.String(500))
+    created_time = db.Column(db.DateTime)
+    is_active = db.Column(db.Boolean())
+    is_default = db.Column(db.Boolean())
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+
+    def as_dict(self):
+
+        return {
+
+            'id': self.id,
+            'place_type': self.place_type,
+            'place_id': self.place_id,
+            'lat': self.lat,
+            'long': self.long,
+            'state': self.state,
+            'city': self.city,
+            'house_no': self.house_no,
+            'address': self.address if self.address is not None else '',
+            'is_active': self.is_active
+        }
+
+class ProviderSlots(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    day = db.Column(db.String(20))
+    start_time = db.Column(db.String(50))
+    end_time = db.Column(db.String(50))
+    status = db.Column(db.String(50),default='Available')
+    is_selected = db.Column(db.Boolean(),default=False)
+
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+
+    def as_dict(self):
+
+        return {
+            "id": self.id,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "is_selected": self.is_selected
+        }
+
+class SavedUserCars(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    created_time = db.Column(db.DateTime)
+    is_completed = db.Column(db.Boolean(), default=False)
+    number_plate = db.Column(db.String(50))
+    colour_code = db.Column(db.String(50))
+    year = db.Column(db.String(150))
+    is_deleted = db.Column(db.Boolean(), default=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    car_brand_id = db.Column(db.Integer, db.ForeignKey('car_brands.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    car_model_id = db.Column(db.Integer, db.ForeignKey('car_models.id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+
+class ServiceRequested(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    created_time = db.Column(db.DateTime)
+    accepted_time = db.Column(db.DateTime)
+
+    start_service_time = db.Column(db.DateTime)
+    is_service_start = db.Column(db.Boolean(), default=False)
+
+    cencelled_time = db.Column(db.DateTime)
+    is_completed = db.Column(db.Boolean(), default=False)
+    service_completed_time = db.Column(db.DateTime)
+
+    is_provider_completed = db.Column(db.Boolean(), default=False)
+    service_date = db.Column(db.String(50))
+    slot_start_time = db.Column(db.String(50))
+    slot_end_time = db.Column(db.String(50))
+    service_day = db.Column(db.String(50))
+    # service_price = db.Column(db.String(50))
+    place_id = db.Column(db.String(50))
+    status = db.Column(db.String(50), default='Pending')
+    track_id = db.Column(db.String(50))
+    payment_id = db.Column(db.String(50))
+    extras_id = db.Column(db.String(50))
+
+    cencelled_by = db.Column(db.String(50))
+
+    car_id = db.Column(db.Integer, db.ForeignKey('saved_user_cars.id', ondelete='CASCADE', onupdate='CASCADE'))
+    service_id = db.Column(db.Integer, db.ForeignKey('services.id', ondelete='CASCADE', onupdate='CASCADE'))
+    address_id = db.Column(db.Integer, db.ForeignKey('user_address.id', ondelete='CASCADE', onupdate='CASCADE'))
+    slot_id = db.Column(db.Integer, db.ForeignKey('provider_slots.id', ondelete='CASCADE', onupdate='CASCADE'))
+    provider_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    zone_id = db.Column(db.Integer, db.ForeignKey('zone.id', ondelete='CASCADE', onupdate='CASCADE'))
+    sub_zone_id = db.Column(db.Integer, db.ForeignKey('sub_zone.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+    provider_data = db.relationship('ProviderRequest', backref='provider_data')
+
+class ProviderRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    provider_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    service_request_id = db.Column(db.Integer, db.ForeignKey('service_requested.id', ondelete='CASCADE', onupdate='CASCADE'))
+    status = db.Column(db.String(50), default='Pending')
+    is_provider_completed = db.Column(db.Boolean(), default=False)
+
+class ServiceCompletedData(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    description = db.Column(db.Text)
+    description_provider = db.Column(db.Text)
+    status = db.Column(db.String(50))
+    before_image_name_1 = db.Column(db.String(150))
+    before_image_path_1 = db.Column(db.String(150))
+    before_image_name_2 = db.Column(db.String(150))
+    before_image_path_2 = db.Column(db.String(150))
+    after_image_name_1 = db.Column(db.String(150))
+    after_image_path_1 = db.Column(db.String(150))
+    after_image_name_2 = db.Column(db.String(150))
+    after_image_path_2 = db.Column(db.String(150))
+    created_time = db.Column(db.DateTime)
+
+    provider_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    service_request_id = db.Column(db.Integer, db.ForeignKey('service_requested.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+class UserServiceReview(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    created_time = db.Column(db.DateTime)
+    review = db.Column(db.Text)
+    rate = db.Column(db.Integer,default=0)
+
+    service_id = db.Column(db.Integer, db.ForeignKey('services.id', ondelete='CASCADE', onupdate='CASCADE'))
+    service_request_id = db.Column(db.Integer,
+                                   db.ForeignKey('service_requested.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+    provider_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+    def as_dict(self):
+        get_review_images = UserServiceReviewImages.query.filter_by(review_id=self.id).all()
+
+        review_list = [ i.as_dict() for i in get_review_images ]
+
+        return {
+
+            'id': self.id,
+            'review': self.review,
+            'rate': self.rate,
+            'username': self.provider_review.name if self.provider_review.name is not None else '',
+            'user_image': generate_presigned_url(self.provider_review.image_name) if self.provider_review.image_name is not None else '',
+            'review_images': review_list,
+            'created_time': self.created_time
+        }
+
+class UserServiceReviewImages(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    image_name = db.Column(db.String(150))
+    image_path = db.Column(db.String(150))
+    review_id = db.Column(db.Integer, db.ForeignKey('user_service_review.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+    def as_dict(self):
+        return {
+            'id': self.id,
+            'review_image': generate_presigned_url(self.image_name)
+        }
+
+class UserPayments(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+    created_time = db.Column(db.DateTime)
+    total_amount = db.Column(db.String(50))
+    payment_id = db.Column(db.String(50))
+    track_id = db.Column(db.String(50))
+    transaction_id = db.Column(db.String(50))
+    intend_status = db.Column(db.String(50))
+    failed_reason = db.Column(db.String(50),default="Not used")
+    trandata = db.Column(db.Text)
+    refunded_time = db.Column(db.DateTime)
+
+    service_request_id = db.Column(db.Integer,
+                                   db.ForeignKey('service_requested.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+    provider_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True,
+                   autoincrement=True, nullable=False)
+
+    title_en = db.Column(db.String(400), nullable=False)
+    title_ar = db.Column(db.String(400), nullable=False)
+    title_bn = db.Column(db.String(400), nullable=False)
+
+    message_en = db.Column(db.Text, nullable=False)
+    message_ar = db.Column(db.Text, nullable=False)
+    message_bn = db.Column(db.Text, nullable=False)
+
+    notification_type = db.Column(db.String(100), nullable=False)
+    is_read = db.Column(db.Boolean(), default=False)
+    created_time = db.Column(db.DateTime, nullable=False)
+    by_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+    to_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+    service_request_id = db.Column(db.Integer,
+                                   db.ForeignKey('service_requested.id', ondelete='CASCADE', onupdate='CASCADE'))
+
+    def as_dict(self):
+
+        return {
+
+            'id': self.id,
+            'created_time': self.created_time,
+            'title': self.title if self.title is not None else '',
+            'message': self.message if self.message is not None else ''
+        }

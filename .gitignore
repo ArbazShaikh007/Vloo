@@ -1,0 +1,7 @@
+migrations
+__pycache__
+*.pyc
+vlooenv
+.env
+base/vloo_key.json
+.idea/
