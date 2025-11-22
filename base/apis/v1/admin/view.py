@@ -421,13 +421,36 @@ class ProviderMonthlyReportResource(Resource):
             filter_text = (data.get('filter_text') or "Monthly").title()
             search_text = (data.get('search_text') or "").strip()
             specific_date = (data.get('specific_date') or "").strip()
+            from_date = (data.get('from_date') or "").strip()
+            to_date = (data.get('to_date') or "").strip()
 
             # ---- timezone (default India) ----
             tz = pytz.timezone(active_user.admin_timezone or "Asia/Kolkata")
             now = datetime.now(tz)
 
+            if from_date and to_date:
+                try:
+                    start = datetime.strptime(from_date, "%Y-%m-%d").date()
+                    end = datetime.strptime(to_date, "%Y-%m-%d").date()
+                except ValueError:
+                    return {
+                               "status": 0,
+                               "message": "Invalid from_date/to_date. Use YYYY-MM-DD."
+                           }, 400
+
+                if end < start:
+                    return {
+                               "status": 0,
+                               "message": "to_date must be greater than or equal to from_date."
+                           }, 400
+
+                date_filters = [
+                    cast(ServiceRequested.service_date, Date) >= start,
+                    cast(ServiceRequested.service_date, Date) <= end,
+                ]
+
             # ---- date filter on ServiceRequested.service_date (stored as 'YYYY-MM-DD') ----
-            if specific_date:
+            elif specific_date:
                 # Override other filters: exact date match
                 try:
                     target_date = datetime.strptime(specific_date, "%Y-%m-%d").date()
