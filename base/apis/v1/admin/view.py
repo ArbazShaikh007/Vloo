@@ -497,9 +497,9 @@ class ProviderMonthlyReportResource(Resource):
                         extract('year', cast(ServiceRequested.service_date, Date)) == now.year,
                     ]
 
-            provider_query = User.query.filter(User.role == "Worker")
+            provider_query = User.query.filter(User.role == "Worker",User.subadmin_id == active_user.id)
             if search_text:
-                provider_query = provider_query.filter(User.name.ilike(f"{search_text}%"))
+                provider_query = provider_query.filter(User.name.ilike(f"{search_text}%"),User.subadmin_id == active_user.id)
 
             providers = provider_query.all()
             provider_ids = [p.id for p in providers]
@@ -1468,6 +1468,90 @@ class AssignProviderListResource(Resource):
             print('errorrrrrrrrrrrrrrrrrrrrrrrrrrrrr:', str(e))
             return {'status': 0, 'message': 'Something went wrong'}, 400
 
+# class AssignProviderResource(Resource):
+#     @admin_login_required
+#     def post(self, active_user):
+#         try:
+#             data = request.get_json()
+#
+#             print('dataaaaaaaaaaaaaaaaaaaaaaa',data)
+#
+#             provider_id = data.get('provider_id')
+#             service_id = data.get('service_id')
+#             zone_id = data.get('zone_id')
+#             sub_zone_id = data.get('sub_zone_id')
+#
+#             if not provider_id:
+#                 return jsonify({'status': 0,'message': 'Please select provider first.'})
+#             if not zone_id:
+#                 return jsonify({'status': 0,'message': 'Please select zone first.'})
+#
+#             get_zone = Zone.query.get(zone_id)
+#             if not get_zone:
+#                 return jsonify({'status': 0, 'message': 'Invalid zone.'})
+#
+#             if active_user.is_subadmin == True:
+#                 if not service_id:
+#                     return jsonify({'status': 0, 'message': 'Please select service first.'})
+#                 if not sub_zone_id:
+#                     return jsonify({'status': 0, 'message': 'Please select subzone.'})
+#
+#                 get_sub_zone = SubZone.query.get(sub_zone_id)
+#                 if not get_sub_zone:
+#                     return jsonify({'status': 0, 'message': 'Invalid sub zone.'})
+#
+#                 get_provider = User.query.filter_by(id=provider_id,role = "Worker").first()
+#                 if not get_provider:
+#                     return jsonify({'status': 0,'message': 'Invalid worker.'})
+#
+#                 get_service = Services.query.get(service_id)
+#                 if not get_service:
+#                     return jsonify({'status': 0, 'message': 'Invalid service.'})
+#
+#                 check_already_assign = AssignProviderService.query.filter_by(sub_zone_id=sub_zone_id,user_id = provider_id,service_id=service_id,zone_id=zone_id).first()
+#                 if check_already_assign:
+#                     return jsonify({'status': 0,'message': 'You cannot assign same worker for same subzone with same service which is already assigned'})
+#
+#                 get_store_data = Store.query.all()
+#
+#                 if len(get_store_data)>0:
+#                     for i in get_store_data:
+#                         slot_list = get_hourly_slots(i.day)
+#                         if len(slot_list)>0:
+#                             for j in slot_list:
+#                                 get_slot_data = ProviderSlots.query.filter(ProviderSlots.user_id == provider_id,ProviderSlots.day == i.day,ProviderSlots.start_time== j['start_time'],ProviderSlots.end_time== j['end_time']).first()
+#                                 if not get_slot_data:
+#                                     add_new_slots = ProviderSlots(user_id = provider_id,day = i.day,start_time = j['start_time'],end_time= j['end_time'])
+#                                     db.session.add(add_new_slots)
+#
+#                             db.session.commit()
+#
+#                 add_data = AssignProviderService(subzone_polygon_geojson=get_sub_zone.polygon_geojson,zone_polygon_geojson=get_zone.polygon_geojson,sub_zone_id=sub_zone_id,place_id = get_zone.place_id,user_id = provider_id,service_id=service_id,zone_id=zone_id,created_time=datetime.utcnow())
+#                 db.session.add(add_data)
+#                 db.session.commit()
+#
+#                 return jsonify({'status': 1,'message': 'Service assign successfully'})
+#
+#             else:
+#                 get_provider = Admin.query.filter_by(id=provider_id, is_subadmin=True).first()
+#                 if not get_provider:
+#                     return jsonify({'status': 0, 'message': 'Invalid provider.'})
+#
+#                 if get_zone.subadmin_id is not None:
+#                     if get_zone.subadmin_id == int(provider_id):
+#                         return jsonify({'status': 0,'message': 'You already assign this provider to same zone.'})
+#
+#                     return jsonify({'status': 0,'message': 'You already assign this zone to another provider.'})
+#
+#                 get_zone.subadmin_id = provider_id
+#                 db.session.commit()
+#
+#                 return jsonify({'status': 1, 'message': 'Zone assign successfully'})
+#
+#         except Exception as e:
+#             print('errorrrrrrrrrrrrrrrrrrrrrrrrrrrrr:', str(e))
+#             return {'status': 0, 'message': 'Something went wrong'}, 400
+
 class AssignProviderResource(Resource):
     @admin_login_required
     def post(self, active_user):
@@ -1500,38 +1584,52 @@ class AssignProviderResource(Resource):
                 if not get_sub_zone:
                     return jsonify({'status': 0, 'message': 'Invalid sub zone.'})
 
-                get_provider = User.query.filter_by(id=provider_id,role = "Worker").first()
-                if not get_provider:
-                    return jsonify({'status': 0,'message': 'Invalid worker.'})
+                # get_provider = User.query.filter_by(id=provider_id,role = "Worker").first()
+                # if not get_provider:
+                #     return jsonify({'status': 0,'message': 'Invalid worker.'})
 
-                get_service = Services.query.get(service_id)
-                if not get_service:
-                    return jsonify({'status': 0, 'message': 'Invalid service.'})
+                # get_service = Services.query.get(service_id)
+                # if not get_service:
+                #     return jsonify({'status': 0, 'message': 'Invalid service.'})
 
-                check_already_assign = AssignProviderService.query.filter_by(sub_zone_id=sub_zone_id,
-                                                                             user_id=provider_id, service_id=service_id,
+                for i in provider_id:
+                    get_provider = User.query.filter_by(id=i,role = "Worker").first()
+                    if not get_provider:
+                        return jsonify({'status': 0,'message': 'Invalid worker.'})
+
+                    for j in service_id:
+                        get_service = Services.query.get(j)
+                        if not get_service:
+                            return jsonify({'status': 0, 'message': 'Invalid service.'})
+
+                        check_already_assign = AssignProviderService.query.filter_by(sub_zone_id=sub_zone_id,
+                                                                             user_id=i, service_id=j,
                                                                              zone_id=zone_id).first()
-                if check_already_assign:
-                    return jsonify({'status': 0,
+                        if check_already_assign:
+                            return jsonify({'status': 0,
                                     'message': 'You cannot assign same worker for same subzone with same service which is already assigned'})
 
-                get_store_data = Store.query.all()
+                        add_data = AssignProviderService(subzone_polygon_geojson=get_sub_zone.polygon_geojson,
+                                                         zone_polygon_geojson=get_zone.polygon_geojson,
+                                                         sub_zone_id=sub_zone_id, place_id=get_zone.place_id,
+                                                         user_id=i, service_id=j, zone_id=zone_id,
+                                                         created_time=datetime.utcnow())
+                        db.session.add(add_data)
+                        db.session.commit()
 
-                if len(get_store_data)>0:
-                    for i in get_store_data:
-                        slot_list = get_hourly_slots(i.day)
-                        if len(slot_list)>0:
-                            for j in slot_list:
-                                get_slot_data = ProviderSlots.query.filter(ProviderSlots.user_id == provider_id,ProviderSlots.day == i.day,ProviderSlots.start_time== j['start_time'],ProviderSlots.end_time== j['end_time']).first()
-                                if not get_slot_data:
-                                    add_new_slots = ProviderSlots(user_id = provider_id,day = i.day,start_time = j['start_time'],end_time= j['end_time'])
-                                    db.session.add(add_new_slots)
-
-                            db.session.commit()
-
-                add_data = AssignProviderService(subzone_polygon_geojson=get_sub_zone.polygon_geojson,zone_polygon_geojson=get_zone.polygon_geojson,sub_zone_id=sub_zone_id,place_id = get_zone.place_id,user_id = provider_id,service_id=service_id,zone_id=zone_id,created_time=datetime.utcnow())
-                db.session.add(add_data)
-                db.session.commit()
+                # get_store_data = Store.query.all()
+                #
+                # if len(get_store_data)>0:
+                #     for i in get_store_data:
+                #         slot_list = get_hourly_slots(i.day)
+                #         if len(slot_list)>0:
+                #             for j in slot_list:
+                #                 get_slot_data = ProviderSlots.query.filter(ProviderSlots.user_id == provider_id,ProviderSlots.day == i.day,ProviderSlots.start_time== j['start_time'],ProviderSlots.end_time== j['end_time']).first()
+                #                 if not get_slot_data:
+                #                     add_new_slots = ProviderSlots(user_id = provider_id,day = i.day,start_time = j['start_time'],end_time= j['end_time'])
+                #                     db.session.add(add_new_slots)
+                #
+                #             db.session.commit()
 
                 return jsonify({'status': 1,'message': 'Service assign successfully'})
 

@@ -179,7 +179,6 @@ def allowed_file(filename):
         "rw2",
     }
 
-
 def upload_photos(file):
     try:
         if file and allowed_file(file.filename):
